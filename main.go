@@ -13,11 +13,13 @@ import (
 type Msg struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
+	Name string `json:"name,omitempty"`
 }
 
 type Room struct {
 	mu    sync.Mutex
 	peers [2]*websocket.Conn
+	names [2]string
 }
 
 var (
@@ -35,8 +37,8 @@ func genID() string {
 	return string(b)
 }
 
-func writeMsg(conn *websocket.Conn, t, text string) {
-	data, _ := json.Marshal(Msg{Type: t, Text: text})
+func send(conn *websocket.Conn, msg Msg) {
+	data, _ := json.Marshal(msg)
 	conn.WriteMessage(websocket.TextMessage, data)
 }
 
@@ -70,12 +72,16 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 		if p == nil {
 			slot = i
 			room.peers[i] = conn
+			room.names[i] = genName(room.names[1-i])
 			break
 		}
 	}
-	var other0 *websocket.Conn
+	myName := room.names[slot]
+	var peer0Conn *websocket.Conn
+	var peer0Name string
 	if slot == 1 {
-		other0 = room.peers[0]
+		peer0Conn = room.peers[0]
+		peer0Name = room.names[0]
 	}
 	room.mu.Unlock()
 
@@ -84,9 +90,11 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if other0 != nil {
-		writeMsg(other0, "system", "peer connected")
-		writeMsg(conn, "system", "peer connected")
+	send(conn, Msg{Type: "welcome", Name: myName})
+
+	if peer0Conn != nil {
+		send(peer0Conn, Msg{Type: "peer_info", Text: "peer connected", Name: myName})
+		send(conn, Msg{Type: "peer_info", Text: "peer connected", Name: peer0Name})
 	}
 
 	defer func() {
@@ -94,9 +102,16 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 		room.mu.Lock()
 		room.peers[slot] = nil
 		other := room.peers[1-slot]
+		empty := other == nil
 		room.mu.Unlock()
 		if other != nil {
-			writeMsg(other, "system", "peer disconnected")
+			send(other, Msg{Type: "system", Text: "peer disconnected"})
+		}
+		if empty {
+			roomsMu.Lock()
+			delete(rooms, id)
+			roomsMu.Unlock()
+			log.Printf("room %s deleted", id)
 		}
 	}()
 
@@ -122,6 +137,6 @@ func main() {
 		http.ServeFile(w, r, "static/index.html")
 	})
 
-	log.Println("listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", mux))
+	log.Println("listening on :8090")
+	log.Fatal(http.ListenAndServe(":8090", mux))
 }

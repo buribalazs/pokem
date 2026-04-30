@@ -13,6 +13,7 @@
     form { display: flex; gap: 8px; }
     input[type=text] { flex: 1; padding: 8px; font-family: monospace; }
     button { padding: 8px 16px; cursor: pointer; }
+    #my-name  { font-weight: bold; margin-bottom: 4px; color: #0066cc; }
     #status   { margin-bottom: 8px; color: #666; }
     #room-url { background: #f5f5f5; padding: 8px; margin-bottom: 16px; word-break: break-all; }
   </style>
@@ -35,6 +36,7 @@
     } else {
       app.innerHTML = `
         <div id="room-url">Share this link with your friend:<br><strong>${window.location.href}</strong></div>
+        <div id="my-name"></div>
         <div id="status">Connecting...</div>
         <div id="messages"></div>
         <form id="chat-form">
@@ -43,19 +45,23 @@
         </form>
       `;
 
-      const status  = document.getElementById('status');
+      const myNameEl = document.getElementById('my-name');
+      const status   = document.getElementById('status');
       const messages = document.getElementById('messages');
-      const form    = document.getElementById('chat-form');
-      const input   = document.getElementById('input');
-      const sendBtn = form.querySelector('button');
+      const form     = document.getElementById('chat-form');
+      const input    = document.getElementById('input');
+      const sendBtn  = form.querySelector('button');
+
+      let myName   = '';
+      let peerName = '';
 
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       const ws = new WebSocket(`${proto}//${location.host}/ws/${roomID}`);
 
-      function addMsg(text, cls) {
+      function addMsg(label, text, cls) {
         const div = document.createElement('div');
         div.className = cls;
-        div.textContent = text;
+        div.textContent = label ? `${label}: ${text}` : text;
         messages.appendChild(div);
         messages.scrollTop = messages.scrollHeight;
       }
@@ -66,26 +72,35 @@
 
       ws.onmessage = ({ data }) => {
         const msg = JSON.parse(data);
-        if (msg.type === 'system') {
-          if (msg.text === 'peer connected') {
-            status.textContent = 'Peer connected!';
-            input.disabled = false;
-            sendBtn.disabled = false;
-            input.focus();
-            addMsg('--- peer connected ---', 'msg-system');
-          } else if (msg.text === 'peer disconnected') {
-            status.textContent = 'Peer disconnected.';
+        if (msg.type === 'welcome') {
+          myName = msg.name;
+          myNameEl.textContent = `You are: ${myName}`;
+        } else if (msg.type === 'peer_info') {
+          peerName = msg.name;
+          status.textContent = `Peer connected!`;
+          input.disabled = false;
+          sendBtn.disabled = false;
+          input.focus();
+          addMsg(null, `--- ${peerName} joined ---`, 'msg-system');
+        } else if (msg.type === 'system') {
+          if (msg.text === 'peer disconnected') {
+            status.textContent = `${peerName || 'Peer'} disconnected.`;
             input.disabled = true;
             sendBtn.disabled = true;
-            addMsg('--- peer disconnected ---', 'msg-system');
+            addMsg(null, `--- ${peerName || 'peer'} left ---`, 'msg-system');
+            peerName = '';
           }
         } else if (msg.type === 'chat') {
-          addMsg(msg.text, 'msg-peer');
+          addMsg(peerName, msg.text, 'msg-peer');
         }
       };
 
-      ws.onerror = () => { status.textContent = 'Connection error.'; };
+      ws.onerror = () => {};
       ws.onclose = () => {
+        if (!myName) {
+          window.location.pathname = '/';
+          return;
+        }
         status.textContent = 'Disconnected from server.';
         input.disabled = true;
         sendBtn.disabled = true;
@@ -96,7 +111,7 @@
         const text = input.value.trim();
         if (!text || ws.readyState !== WebSocket.OPEN) return;
         ws.send(JSON.stringify({ type: 'chat', text }));
-        addMsg(text, 'msg-me');
+        addMsg(myName, text, 'msg-me');
         input.value = '';
       };
     }
