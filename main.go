@@ -16,17 +16,21 @@ type Msg struct {
 	Name string `json:"name,omitempty"`
 }
 
+type Peer struct {
+	conn *websocket.Conn
+	name string
+}
+
 type Room struct {
-	mu     sync.Mutex
-	peers  [2]*websocket.Conn
-	names  [2]string
+	mutex  sync.Mutex
+	peers  [2]Peer
 	locked bool
 }
 
 var (
-	rooms           = map[string]*Room{}
-	roomsMutex      sync.RWMutex
-	wsUpgrader      = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	rooms      = map[string]*Room{}
+	roomsMutex sync.RWMutex
+	wsUpgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 )
 
 func genID() string {
@@ -68,14 +72,16 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	conn.SetReadLimit(4096)
 
-	room.mu.Lock()
+	room.mutex.Lock()
 	peerSlot := -1
 	if !room.locked {
-		for slotIndex, existingConn := range room.peers {
-			if existingConn == nil {
+		for slotIndex, existingPeer := range room.peers {
+			if existingPeer.conn == nil {
 				peerSlot = slotIndex
-				room.peers[slotIndex] = conn
-				room.names[slotIndex] = genName(room.names[1-slotIndex])
+				room.peers[slotIndex] = Peer{
+					conn: conn,
+					name: genName(room.peers[1-slotIndex].name),
+				}
 				break
 			}
 		}
@@ -83,36 +89,37 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 			room.locked = true
 		}
 	}
-	myName := room.names[peerSlot]
-	var waitingPeerConn *websocket.Conn
-	var waitingPeerName string
-	if peerSlot == 1 {
-		waitingPeerConn = room.peers[0]
-		waitingPeerName = room.names[0]
+	var myPeer Peer
+	var waitingPeer Peer
+	if peerSlot >= 0 {
+		myPeer = room.peers[peerSlot]
+		if peerSlot == 1 {
+			waitingPeer = room.peers[0]
+		}
 	}
-	room.mu.Unlock()
+	room.mutex.Unlock()
 
 	if peerSlot < 0 {
 		conn.Close()
 		return
 	}
 
-	sendMsg(conn, Msg{Type: "welcome", Name: myName})
+	sendMsg(conn, Msg{Type: "welcome", Name: myPeer.name})
 
-	if waitingPeerConn != nil {
-		sendMsg(waitingPeerConn, Msg{Type: "peer_info", Text: "peer connected", Name: myName})
-		sendMsg(conn, Msg{Type: "peer_info", Text: "peer connected", Name: waitingPeerName})
+	if waitingPeer.conn != nil {
+		sendMsg(waitingPeer.conn, Msg{Type: "peer_info", Text: "peer connected", Name: myPeer.name})
+		sendMsg(conn, Msg{Type: "peer_info", Text: "peer connected", Name: waitingPeer.name})
 	}
 
 	defer func() {
 		conn.Close()
-		room.mu.Lock()
-		room.peers[peerSlot] = nil
-		otherPeerConn := room.peers[1-peerSlot]
-		roomIsEmpty := otherPeerConn == nil
-		room.mu.Unlock()
-		if otherPeerConn != nil {
-			sendMsg(otherPeerConn, Msg{Type: "system", Text: "peer disconnected"})
+		room.mutex.Lock()
+		room.peers[peerSlot] = Peer{}
+		otherPeer := room.peers[1-peerSlot]
+		roomIsEmpty := otherPeer.conn == nil
+		room.mutex.Unlock()
+		if otherPeer.conn != nil {
+			sendMsg(otherPeer.conn, Msg{Type: "system", Text: "peer disconnected"})
 		}
 		if roomIsEmpty {
 			roomsMutex.Lock()
@@ -127,11 +134,11 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			break
 		}
-		room.mu.Lock()
-		otherPeerConn := room.peers[1-peerSlot]
-		room.mu.Unlock()
-		if otherPeerConn != nil {
-			otherPeerConn.WriteMessage(websocket.TextMessage, messageData)
+		room.mutex.Lock()
+		otherPeer := room.peers[1-peerSlot]
+		room.mutex.Unlock()
+		if otherPeer.conn != nil {
+			otherPeer.conn.WriteMessage(websocket.TextMessage, messageData)
 		}
 	}
 }
