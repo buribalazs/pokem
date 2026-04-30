@@ -65,6 +65,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	conn.SetReadLimit(4096)
 
 	room.mu.Lock()
 	slot := -1
